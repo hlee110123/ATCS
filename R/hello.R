@@ -17,6 +17,10 @@ ATC_CATEGORIES <- list(
 )
 
 build_atc_query <- function(schema, atc_code) {
+  # Sanitize inputs to prevent SQL injection
+  schema <- gsub("[^a-zA-Z0-9_]", "", schema)
+  atc_code <- gsub("[^A-Z]", "", atc_code)
+
   sprintf("
   WITH atc_concepts AS (
       SELECT
@@ -70,7 +74,8 @@ build_atc_query <- function(schema, atc_code) {
   SELECT
       category_prescriptions,
       total_prescriptions,
-      ROUND((category_prescriptions::numeric / total_prescriptions) * 100, 2) as percentage_of_total
+      ROUND((CASE WHEN total_prescriptions = 0 THEN 0
+            ELSE (category_prescriptions::numeric / total_prescriptions) * 100 END), 2) as percentage_of_total
   FROM
       prescription_stats",
           schema, atc_code, schema, schema, schema, schema, schema)
@@ -78,35 +83,99 @@ build_atc_query <- function(schema, atc_code) {
 
 # Define get_atc_stats function
 get_atc_stats <- function(conn, schema, atc_code, start_date = "2016-01-01", end_date = "2024-12-31") {
+  # Validate inputs
+  if (!requireNamespace("DatabaseConnector", quietly = TRUE)) {
+    stop("Package 'DatabaseConnector' is required. Please install it with install.packages('DatabaseConnector')")
+  }
+
+  if (is.null(conn) || !inherits(conn, "connection")) {
+    stop("Invalid connection object. Please provide a valid DatabaseConnector connection")
+  }
+
+  if (is.null(schema) || schema == "") {
+    stop("Schema name cannot be empty")
+  }
+
   if (!atc_code %in% names(ATC_CATEGORIES)) {
     stop(sprintf("Invalid ATC code. Must be one of: %s",
                  paste(names(ATC_CATEGORIES), collapse = ", ")))
+  }
+
+  # Validate dates
+  tryCatch({
+    start_date <- as.Date(start_date)
+    end_date <- as.Date(end_date)
+  }, error = function(e) {
+    stop("Invalid date format. Please use YYYY-MM-DD format")
+  })
+
+  if (start_date >= end_date) {
+    stop("Start date must be before end date")
   }
 
   # Build the query with proper schema references
   query <- build_atc_query(schema, atc_code)
 
   # Replace date parameters
-  query <- gsub("'2016-01-01'", paste0("'", start_date, "'"), query)
-  query <- gsub("'2024-12-31'", paste0("'", end_date, "'"), query)
+  query <- gsub("'2016-01-01'", paste0("'", format(start_date, "%Y-%m-%d"), "'"), query)
+  query <- gsub("'2024-12-31'", paste0("'", format(end_date, "%Y-%m-%d"), "'"), query)
 
-  # Execute query using DatabaseConnector
-  result <- querySql(conn, query)
+  # Execute query with error handling
+  tryCatch({
+    # Execute query using DatabaseConnector
+    result <- DatabaseConnector::querySql(conn, query)
 
-  # Add category name to results
-  result$atc_category <- ATC_CATEGORIES[[atc_code]]$name
-  result$atc_code <- atc_code
-  result$date_range <- paste(start_date, "to", end_date)
+    # Handle empty results
+    if (nrow(result) == 0 || is.null(result)) {
+      message(sprintf("No results found for ATC category %s", atc_code))
+      # Create empty result with correct structure
+      result <- data.frame(
+        category_prescriptions = 0,
+        total_prescriptions = 0,
+        percentage_of_total = 0
+      )
+    }
 
-  return(result)
+    # Add category name to results
+    result$atc_category <- ATC_CATEGORIES[[atc_code]]$name
+    result$atc_code <- atc_code
+    result$date_range <- paste(format(start_date, "%Y-%m-%d"), "to", format(end_date, "%Y-%m-%d"))
+
+    return(result)
+
+  }, error = function(e) {
+    message(sprintf("Error executing query for ATC code %s: %s", atc_code, e$message))
+    return(NULL)
+  })
 }
 
 # Define get_all_atc_stats function
 get_all_atc_stats <- function(conn, schema, start_date = "2016-01-01", end_date = "2024-12-31") {
-  results <- lapply(names(ATC_CATEGORIES), function(code) {
-    stats <- get_atc_stats(conn, schema, code, start_date, end_date)
-    return(stats)
-  })
+  if (is.null(conn) || !inherits(conn, "connection")) {
+    stop("Invalid connection object. Please provide a valid DatabaseConnector connection")
+  }
 
-  do.call(rbind, results)
+  results_list <- list()
+
+  # Process each ATC category with error handling
+  for (code in names(ATC_CATEGORIES)) {
+    tryCatch({
+      stats <- get_atc_stats(conn, schema, code, start_date, end_date)
+      if (!is.null(stats)) {
+        results_list[[code]] <- stats
+      }
+    }, error = function(e) {
+      message(sprintf("Error processing ATC code %s: %s", code, e$message))
+    })
+  }
+
+  # Check if any results were obtained
+  if (length(results_list) == 0) {
+    stop("Failed to retrieve statistics for any ATC category")
+  }
+
+  # Combine results
+  result_df <- do.call(rbind, results_list)
+  rownames(result_df) <- NULL
+  return(result_df)
 }
