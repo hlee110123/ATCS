@@ -1,22 +1,5 @@
-# Define the ATC categories
-ATC_CATEGORIES <- list(
-  A = list(name = "Alimentary tract and metabolism", code = "A"),
-  B = list(name = "Blood and blood forming organs", code = "B"),
-  C = list(name = "Cardiovascular system", code = "C"),
-  D = list(name = "Dermatologicals", code = "D"),
-  G = list(name = "Genito-urinary system and sex hormones", code = "G"),
-  H = list(name = "Systemic hormonal preparations", code = "H"),
-  J = list(name = "Antiinfectives for systemic use", code = "J"),
-  L = list(name = "Antineoplastic and immunomodulating agents", code = "L"),
-  M = list(name = "Musculoskeletal system", code = "M"),
-  N = list(name = "Nervous system", code = "N"),
-  P = list(name = "Antiparasitic products", code = "P"),
-  R = list(name = "Respiratory system", code = "R"),
-  S = list(name = "Sensory organs", code = "S"),
-  V = list(name = "Various", code = "V")
-)
-
-build_atc_query <- function(schema, atc_code) {
+# Define a complete SQL Server compatible solution
+build_atc_query_sqlserver <- function(schema, atc_code) {
   # Sanitize inputs to prevent SQL injection
   schema <- gsub("[^a-zA-Z0-9_]", "", schema)
   atc_code <- gsub("[^A-Z]", "", atc_code)
@@ -82,86 +65,62 @@ build_atc_query <- function(schema, atc_code) {
           schema, atc_code, schema, schema, schema, schema, schema)
 }
 
-# Define get_atc_stats function
-get_atc_stats <- function(conn, schema, atc_code, start_date = "2016-01-01", end_date = "2024-12-31") {
-  # Validate inputs
-  if (!requireNamespace("DatabaseConnector", quietly = TRUE)) {
-    stop("Package 'DatabaseConnector' is required. Please install it with install.packages('DatabaseConnector')")
-  }
+# Define the ATC categories again (in case they're not in your environment)
+ATC_CATEGORIES <- list(
+  A = list(name = "Alimentary tract and metabolism", code = "A"),
+  B = list(name = "Blood and blood forming organs", code = "B"),
+  C = list(name = "Cardiovascular system", code = "C"),
+  D = list(name = "Dermatologicals", code = "D"),
+  G = list(name = "Genito-urinary system and sex hormones", code = "G"),
+  H = list(name = "Systemic hormonal preparations", code = "H"),
+  J = list(name = "Antiinfectives for systemic use", code = "J"),
+  L = list(name = "Antineoplastic and immunomodulating agents", code = "L"),
+  M = list(name = "Musculoskeletal system", code = "M"),
+  N = list(name = "Nervous system", code = "N"),
+  P = list(name = "Antiparasitic products", code = "P"),
+  R = list(name = "Respiratory system", code = "R"),
+  S = list(name = "Sensory organs", code = "S"),
+  V = list(name = "Various", code = "V")
+)
 
-  if (is.null(conn) || !inherits(conn, "connection")) {
-    stop("Invalid connection object. Please provide a valid DatabaseConnector connection")
-  }
-
-  if (is.null(schema) || schema == "") {
-    stop("Schema name cannot be empty")
-  }
-
+# Define SQL Server compatible get_atc_stats
+get_atc_stats_sqlserver <- function(conn, schema, atc_code, start_date = "2016-01-01", end_date = "2024-12-31") {
   if (!atc_code %in% names(ATC_CATEGORIES)) {
     stop(sprintf("Invalid ATC code. Must be one of: %s",
                  paste(names(ATC_CATEGORIES), collapse = ", ")))
   }
 
-  # Validate dates
-  tryCatch({
-    start_date <- as.Date(start_date)
-    end_date <- as.Date(end_date)
-  }, error = function(e) {
-    stop("Invalid date format. Please use YYYY-MM-DD format")
-  })
-
-  if (start_date >= end_date) {
-    stop("Start date must be before end date")
-  }
-
-  # Build the query with proper schema references
-  query <- build_atc_query(schema, atc_code)
+  # Build the query
+  query <- build_atc_query_sqlserver(schema, atc_code)
 
   # Replace date parameters
-  query <- gsub("'2016-01-01'", paste0("'", format(start_date, "%Y-%m-%d"), "'"), query)
-  query <- gsub("'2024-12-31'", paste0("'", format(end_date, "%Y-%m-%d"), "'"), query)
+  query <- gsub("'2016-01-01'", paste0("'", start_date, "'"), query)
+  query <- gsub("'2024-12-31'", paste0("'", end_date, "'"), query)
 
-  # Execute query with error handling
+  # Execute query
   tryCatch({
-    # Execute query using DatabaseConnector
     result <- DatabaseConnector::querySql(conn, query)
-
-    # Handle empty results
-    if (nrow(result) == 0 || is.null(result)) {
-      message(sprintf("No results found for ATC category %s", atc_code))
-      # Create empty result with correct structure
-      result <- data.frame(
-        category_prescriptions = 0,
-        total_prescriptions = 0,
-        percentage_of_total = 0
-      )
-    }
 
     # Add category name to results
     result$atc_category <- ATC_CATEGORIES[[atc_code]]$name
     result$atc_code <- atc_code
-    result$date_range <- paste(format(start_date, "%Y-%m-%d"), "to", format(end_date, "%Y-%m-%d"))
+    result$date_range <- paste(start_date, "to", end_date)
 
     return(result)
-
   }, error = function(e) {
     message(sprintf("Error executing query for ATC code %s: %s", atc_code, e$message))
     return(NULL)
   })
 }
 
-# Define get_all_atc_stats function
-get_all_atc_stats <- function(conn, schema, start_date = "2016-01-01", end_date = "2024-12-31") {
-  if (is.null(conn) || !inherits(conn, "connection")) {
-    stop("Invalid connection object. Please provide a valid DatabaseConnector connection")
-  }
-
+# Define SQL Server compatible get_all_atc_stats
+get_all_atc_stats_sqlserver <- function(conn, schema, start_date = "2016-01-01", end_date = "2024-12-31") {
   results_list <- list()
 
-  # Process each ATC category with error handling
+  # Process each ATC category
   for (code in names(ATC_CATEGORIES)) {
     tryCatch({
-      stats <- get_atc_stats(conn, schema, code, start_date, end_date)
+      stats <- get_atc_stats_sqlserver(conn, schema, code, start_date, end_date)
       if (!is.null(stats)) {
         results_list[[code]] <- stats
       }
@@ -180,3 +139,6 @@ get_all_atc_stats <- function(conn, schema, start_date = "2016-01-01", end_date 
   rownames(result_df) <- NULL
   return(result_df)
 }
+
+cat("SQL Server compatible functions created successfully!\n")
+cat("Use get_atc_stats_sqlserver() and get_all_atc_stats_sqlserver() functions\n")
