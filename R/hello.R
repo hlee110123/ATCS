@@ -16,7 +16,6 @@ ATC_CATEGORIES <- list(
   V = list(name = "Various", code = "V")
 )
 
-# Define the function to build query
 build_atc_query <- function(schema, atc_code) {
   sprintf("
   WITH atc_concepts AS (
@@ -71,7 +70,7 @@ build_atc_query <- function(schema, atc_code) {
   SELECT
       category_prescriptions,
       total_prescriptions,
-      ROUND(CAST(category_prescriptions AS FLOAT) / total_prescriptions * 100, 2) as percentage_of_total
+      ROUND((category_prescriptions::numeric / total_prescriptions) * 100, 2) as percentage_of_total
   FROM
       prescription_stats",
           schema, atc_code, schema, schema, schema, schema, schema)
