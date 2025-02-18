@@ -1,4 +1,8 @@
-# Define the ATC categories
+# SQLServerATCStats R Package
+
+#' @title ATC Categories Definition
+#' @description A list of Anatomical Therapeutic Chemical (ATC) categories with codes and names
+#' @export
 ATC_CATEGORIES <- list(
   A = list(name = "Alimentary tract and metabolism", code = "A"),
   B = list(name = "Blood and blood forming organs", code = "B"),
@@ -16,11 +20,27 @@ ATC_CATEGORIES <- list(
   V = list(name = "Various", code = "V")
 )
 
-build_atc_query <- function(schema, atc_code) {
+#' Build ATC Query for SQL Server
+#'
+#' Builds a SQL Server compatible query to retrieve prescription statistics for a given ATC category
+#'
+#' @param schema The database schema name
+#' @param atc_code The ATC category code (A-V)
+#' @param start_date Start date for data analysis in YYYY-MM-DD format
+#' @param end_date End date for data analysis in YYYY-MM-DD format
+#'
+#' @return A SQL Server compatible query string
+#' @keywords internal
+build_atc_query_sqlserver <- function(schema, atc_code, start_date, end_date) {
   # Sanitize inputs to prevent SQL injection
   schema <- gsub("[^a-zA-Z0-9_]", "", schema)
   atc_code <- gsub("[^A-Z]", "", atc_code)
 
+  # Format dates for SQL Server
+  start_date_str <- format(as.Date(start_date), "%Y-%m-%d")
+  end_date_str <- format(as.Date(end_date), "%Y-%m-%d")
+
+  # Build SQL Server compatible query
   sprintf("
   WITH atc_concepts AS (
       SELECT
@@ -60,36 +80,60 @@ build_atc_query <- function(schema, atc_code) {
           (SELECT COUNT(*)
            FROM %s.drug_exposure
            WHERE drug_concept_id IS NOT NULL
-           AND drug_exposure_start_date >= '2016-01-01'
-           AND (drug_exposure_end_date IS NULL OR drug_exposure_end_date <= '2024-12-31')
+           AND drug_exposure_start_date >= '%s'
+           AND (drug_exposure_end_date IS NULL OR drug_exposure_end_date <= '%s')
           ) as total_prescriptions
       FROM
           %s.drug_exposure de
           JOIN all_relevant_concepts arc
               ON de.drug_concept_id = arc.descendant_concept_id
       WHERE
-          de.drug_exposure_start_date >= '2016-01-01'
-          AND (de.drug_exposure_end_date IS NULL OR de.drug_exposure_end_date <= '2024-12-31')
+          de.drug_exposure_start_date >= '%s'
+          AND (de.drug_exposure_end_date IS NULL OR de.drug_exposure_end_date <= '%s')
   )
   SELECT
       category_prescriptions,
       total_prescriptions,
-      ROUND((CASE WHEN total_prescriptions = 0 THEN 0
-            ELSE (category_prescriptions::numeric / total_prescriptions) * 100 END), 2) as percentage_of_total
+      ROUND(CAST((CASE WHEN total_prescriptions = 0 THEN 0
+            ELSE (CAST(category_prescriptions AS FLOAT) / total_prescriptions) * 100 END) AS DECIMAL(10,2)), 2) as percentage_of_total
   FROM
       prescription_stats",
-          schema, atc_code, schema, schema, schema, schema, schema)
+          schema, atc_code, schema, schema, schema, schema, start_date_str, end_date_str, schema, start_date_str, end_date_str)
 }
 
-# Define get_atc_stats function
-get_atc_stats <- function(conn, schema, atc_code, start_date = "2016-01-01", end_date = "2024-12-31") {
+#' Get ATC Statistics from SQL Server
+#'
+#' Retrieves prescription statistics for a specific ATC category from SQL Server
+#'
+#' @param conn A DBI or ODBC connection to SQL Server
+#' @param schema The database schema name containing OMOP CDM tables
+#' @param atc_code The ATC category code (single character A-V)
+#' @param start_date Start date for data analysis (Default: "2016-01-01")
+#' @param end_date End date for data analysis (Default: "2024-12-31")
+#'
+#' @return A data.frame with prescription statistics for the specified ATC category
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' # Connect to SQL Server using odbc
+#' conn <- DBI::dbConnect(odbc::odbc(),
+#'                        Driver = "SQL Server",
+#'                        Server = "SERVERNAME",
+#'                        Database = "DBNAME",
+#'                        Trusted_Connection = "Yes")
+#'
+#' # Get statistics for cardiovascular drugs
+#' cardio_stats <- get_atc_stats_sqlserver(conn, "cdm_schema", "C")
+#' }
+get_atc_stats_sqlserver <- function(conn, schema, atc_code, start_date = "2016-01-01", end_date = "2024-12-31") {
   # Validate inputs
-  if (!requireNamespace("DatabaseConnector", quietly = TRUE)) {
-    stop("Package 'DatabaseConnector' is required. Please install it with install.packages('DatabaseConnector')")
+  if (!requireNamespace("DBI", quietly = TRUE)) {
+    stop("Package 'DBI' is required. Please install it with install.packages('DBI')")
   }
 
-  if (is.null(conn) || !inherits(conn, "connection")) {
-    stop("Invalid connection object. Please provide a valid DatabaseConnector connection")
+  if (is.null(conn)) {
+    stop("Invalid connection object. Please provide a valid DBI connection to SQL Server")
   }
 
   if (is.null(schema) || schema == "") {
@@ -113,17 +157,13 @@ get_atc_stats <- function(conn, schema, atc_code, start_date = "2016-01-01", end
     stop("Start date must be before end date")
   }
 
-  # Build the query with proper schema references
-  query <- build_atc_query(schema, atc_code)
-
-  # Replace date parameters
-  query <- gsub("'2016-01-01'", paste0("'", format(start_date, "%Y-%m-%d"), "'"), query)
-  query <- gsub("'2024-12-31'", paste0("'", format(end_date, "%Y-%m-%d"), "'"), query)
+  # Build SQL Server compatible query
+  query <- build_atc_query_sqlserver(schema, atc_code, start_date, end_date)
 
   # Execute query with error handling
   tryCatch({
-    # Execute query using DatabaseConnector
-    result <- DatabaseConnector::querySql(conn, query)
+    # Execute query using DBI
+    result <- DBI::dbGetQuery(conn, query)
 
     # Handle empty results
     if (nrow(result) == 0 || is.null(result)) {
@@ -149,10 +189,49 @@ get_atc_stats <- function(conn, schema, atc_code, start_date = "2016-01-01", end
   })
 }
 
-# Define get_all_atc_stats function
-get_all_atc_stats <- function(conn, schema, start_date = "2016-01-01", end_date = "2024-12-31") {
-  if (is.null(conn) || !inherits(conn, "connection")) {
-    stop("Invalid connection object. Please provide a valid DatabaseConnector connection")
+#' Get All ATC Statistics from SQL Server
+#'
+#' Retrieves prescription statistics for all ATC categories from SQL Server
+#'
+#' @param conn A DBI or ODBC connection to SQL Server
+#' @param schema The database schema name containing OMOP CDM tables
+#' @param start_date Start date for data analysis (Default: "2016-01-01")
+#' @param end_date End date for data analysis (Default: "2024-12-31")
+#'
+#' @return A data.frame with prescription statistics for all ATC categories
+#' @export
+#'
+#' @examples
+#' \dontrun{
+#' # Connect to SQL Server using odbc
+#' conn <- DBI::dbConnect(odbc::odbc(),
+#'                        Driver = "SQL Server",
+#'                        Server = "SERVERNAME",
+#'                        Database = "DBNAME",
+#'                        Trusted_Connection = "Yes")
+#'
+#' # Get statistics for all drug categories
+#' all_drug_stats <- get_all_atc_stats_sqlserver(conn, "cdm_schema")
+#' }
+get_all_atc_stats_sqlserver <- function(conn, schema, start_date = "2016-01-01", end_date = "2024-12-31") {
+  if (is.null(conn)) {
+    stop("Invalid connection object. Please provide a valid DBI connection to SQL Server")
+  }
+
+  if (is.null(schema) || schema == "") {
+    stop("Schema name cannot be empty")
+  }
+
+  # Validate dates
+  tryCatch({
+    start_date <- as.Date(start_date)
+    end_date <- as.Date(end_date)
+  }, error = function(e) {
+    stop("Invalid date format. Please use YYYY-MM-DD format")
+  })
+
+  if (start_date >= end_date) {
+    stop("Start date must be before end date")
   }
 
   results_list <- list()
@@ -160,7 +239,7 @@ get_all_atc_stats <- function(conn, schema, start_date = "2016-01-01", end_date 
   # Process each ATC category with error handling
   for (code in names(ATC_CATEGORIES)) {
     tryCatch({
-      stats <- get_atc_stats(conn, schema, code, start_date, end_date)
+      stats <- get_atc_stats_sqlserver(conn, schema, code, start_date, end_date)
       if (!is.null(stats)) {
         results_list[[code]] <- stats
       }
