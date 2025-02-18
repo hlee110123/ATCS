@@ -75,7 +75,7 @@ build_atc_query <- function(schema, atc_code) {
       category_prescriptions,
       total_prescriptions,
       ROUND((CASE WHEN total_prescriptions = 0 THEN 0
-            ELSE (category_prescriptions::numeric / total_prescriptions) * 100 END), 2) as percentage_of_total
+            ELSE (CAST(category_prescriptions AS FLOAT) / total_prescriptions) * 100 END), 2) as percentage_of_total
   FROM
       prescription_stats",
           schema, atc_code, schema, schema, schema, schema, schema)
